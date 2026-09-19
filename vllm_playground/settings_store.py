@@ -69,7 +69,7 @@ class SettingsStore:
                 # Only keep known keys
                 self._settings = {k: v for k, v in data.items() if k in ALLOWED_KEYS}
             else:
-                logger.warning(f"settings.json has unexpected format, ignoring")
+                logger.warning("settings.json has unexpected format, ignoring")
         except (json.JSONDecodeError, ValueError) as e:
             logger.warning(f"Corrupted settings.json, resetting to defaults: {e}")
             # Back up the corrupted file so the user can inspect it

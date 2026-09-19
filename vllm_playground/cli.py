@@ -4,10 +4,10 @@ CLI entry point for vLLM Playground
 """
 
 import argparse
-import sys
+import atexit
 import os
 import signal
-import atexit
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -29,7 +29,10 @@ def find_process_by_port(port: int = 7860) -> Optional[psutil.Process]:
                     return psutil.Process(conn.pid)
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass
-    except (psutil.AccessDenied, AttributeError):
+    except (psutil.AccessDenied, AttributeError, OSError):
+        # Some sandboxed/restricted environments (e.g. macOS without full
+        # process-listing entitlements) raise a raw PermissionError/OSError
+        # from the underlying syscall instead of psutil's own AccessDenied.
         pass
     return None
 
@@ -52,7 +55,12 @@ def get_existing_process(port: int = 7860) -> Optional[psutil.Process]:
         except (ValueError, psutil.NoSuchProcess, psutil.AccessDenied):
             pass
 
-        pid_file.unlink(missing_ok=True)
+        try:
+            pid_file.unlink(missing_ok=True)
+        except OSError:
+            # Stale PID file couldn't be removed (e.g. owned by another user,
+            # read-only filesystem) -- don't let that crash status/start/stop.
+            pass
 
     # Fallback: check if port is in use
     port_proc = find_process_by_port(port)
@@ -197,7 +205,7 @@ def cmd_start(args):
         print("=" * 60)
         print("⚠️  WARNING: vLLM Playground is already running!")
         print("=" * 60)
-        print(f"\nExisting process details:")
+        print("\nExisting process details:")
         print(f"  PID: {existing_proc.pid}")
 
         print("\n🔄 Automatically stopping the existing process...")
@@ -263,7 +271,7 @@ def cmd_status(args):
         print(f"  PID: {proc.pid}")
         try:
             print(f"  Status: {proc.status()}")
-        except:
+        except Exception:
             pass
         return 0
     else:
@@ -329,14 +337,14 @@ def cmd_pull(args):
             )
             result = subprocess.run(cmd, check=False)
             if result.returncode == 0:
-                print(f"✅ NVIDIA GPU image pulled successfully!")
+                print("✅ NVIDIA GPU image pulled successfully!")
             else:
                 # Try without sudo
                 result = subprocess.run([runtime, "pull", NVIDIA_IMAGE], check=False)
                 if result.returncode == 0:
-                    print(f"✅ NVIDIA GPU image pulled successfully!")
+                    print("✅ NVIDIA GPU image pulled successfully!")
                 else:
-                    print(f"❌ Failed to pull NVIDIA GPU image")
+                    print("❌ Failed to pull NVIDIA GPU image")
                     success = False
         except Exception as e:
             print(f"❌ Error pulling NVIDIA GPU image: {e}")
@@ -353,14 +361,14 @@ def cmd_pull(args):
             cmd = ["sudo", "-n", runtime, "pull", AMD_IMAGE] if runtime == "podman" else [runtime, "pull", AMD_IMAGE]
             result = subprocess.run(cmd, check=False)
             if result.returncode == 0:
-                print(f"✅ AMD ROCm GPU image pulled successfully!")
+                print("✅ AMD ROCm GPU image pulled successfully!")
             else:
                 # Try without sudo
                 result = subprocess.run([runtime, "pull", AMD_IMAGE], check=False)
                 if result.returncode == 0:
-                    print(f"✅ AMD ROCm GPU image pulled successfully!")
+                    print("✅ AMD ROCm GPU image pulled successfully!")
                 else:
-                    print(f"❌ Failed to pull AMD ROCm GPU image")
+                    print("❌ Failed to pull AMD ROCm GPU image")
                     success = False
         except Exception as e:
             print(f"❌ Error pulling AMD ROCm GPU image: {e}")
@@ -378,14 +386,14 @@ def cmd_pull(args):
             cmd = ["sudo", "-n", runtime, "pull", TPU_IMAGE] if runtime == "podman" else [runtime, "pull", TPU_IMAGE]
             result = subprocess.run(cmd, check=False)
             if result.returncode == 0:
-                print(f"✅ Google Cloud TPU image pulled successfully!")
+                print("✅ Google Cloud TPU image pulled successfully!")
             else:
                 # Try without sudo
                 result = subprocess.run([runtime, "pull", TPU_IMAGE], check=False)
                 if result.returncode == 0:
-                    print(f"✅ Google Cloud TPU image pulled successfully!")
+                    print("✅ Google Cloud TPU image pulled successfully!")
                 else:
-                    print(f"❌ Failed to pull Google Cloud TPU image")
+                    print("❌ Failed to pull Google Cloud TPU image")
                     success = False
         except Exception as e:
             print(f"❌ Error pulling Google Cloud TPU image: {e}")
@@ -400,9 +408,9 @@ def cmd_pull(args):
         try:
             result = subprocess.run([runtime, "pull", cpu_image], check=False)
             if result.returncode == 0:
-                print(f"✅ CPU image pulled successfully!")
+                print("✅ CPU image pulled successfully!")
             else:
-                print(f"❌ Failed to pull CPU image")
+                print("❌ Failed to pull CPU image")
                 success = False
         except Exception as e:
             print(f"❌ Error pulling CPU image: {e}")
@@ -424,14 +432,14 @@ def cmd_pull(args):
             )
             result = subprocess.run(cmd, check=False)
             if result.returncode == 0:
-                print(f"✅ vLLM-Omni NVIDIA image pulled successfully!")
+                print("✅ vLLM-Omni NVIDIA image pulled successfully!")
             else:
                 # Try without sudo
                 result = subprocess.run([runtime, "pull", OMNI_NVIDIA_IMAGE], check=False)
                 if result.returncode == 0:
-                    print(f"✅ vLLM-Omni NVIDIA image pulled successfully!")
+                    print("✅ vLLM-Omni NVIDIA image pulled successfully!")
                 else:
-                    print(f"❌ Failed to pull vLLM-Omni NVIDIA image")
+                    print("❌ Failed to pull vLLM-Omni NVIDIA image")
                     success = False
         except Exception as e:
             print(f"❌ Error pulling vLLM-Omni NVIDIA image: {e}")
@@ -452,13 +460,13 @@ def cmd_pull(args):
                 )
                 result = subprocess.run(cmd, check=False)
                 if result.returncode == 0:
-                    print(f"✅ vLLM-Omni AMD ROCm image pulled successfully!")
+                    print("✅ vLLM-Omni AMD ROCm image pulled successfully!")
                 else:
                     result = subprocess.run([runtime, "pull", OMNI_AMD_IMAGE], check=False)
                     if result.returncode == 0:
-                        print(f"✅ vLLM-Omni AMD ROCm image pulled successfully!")
+                        print("✅ vLLM-Omni AMD ROCm image pulled successfully!")
                     else:
-                        print(f"❌ Failed to pull vLLM-Omni AMD ROCm image")
+                        print("❌ Failed to pull vLLM-Omni AMD ROCm image")
                         success = False
             except Exception as e:
                 print(f"❌ Error pulling vLLM-Omni AMD ROCm image: {e}")

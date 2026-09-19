@@ -9,24 +9,22 @@ import logging
 import math
 import os
 import random
-import sys
-import subprocess
-import tempfile
 import shutil
+import subprocess
+import sys
+import tempfile
 import time
 from collections import deque
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any, Literal, Union, Tuple
 from pathlib import Path
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, FileResponse
+import aiohttp
+import uvicorn
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-import uvicorn
-import struct
-import signal
-import aiohttp
 
 # Setup logging (must be before imports that use logger)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -47,8 +45,9 @@ except ImportError:
     logger.warning("container_manager not available - container mode will be disabled")
 
 # Instance registry for multi-instance support
-from .backend_registry import InstanceRegistry, InstanceEntry, BackendEntry
-import vllm_playground.backend_registry as _ir_mod
+import vllm_playground.backend_registry as _ir_mod  # noqa: E402
+
+from .backend_registry import InstanceEntry, InstanceRegistry  # noqa: E402
 
 app = FastAPI(title="vLLM Playground", version="1.0.0")
 
@@ -725,8 +724,8 @@ omni_websocket_connections: List[WebSocket] = []
 omni_inprocess_model: Optional[Any] = None  # Holds the Omni model when using in-process mode
 
 # User settings store (persists to ~/.vllm-playground/settings.json)
-from .settings_store import SettingsStore
-from . import image_catalog
+from . import image_catalog  # noqa: E402
+from .settings_store import SettingsStore  # noqa: E402
 
 settings_store = SettingsStore()
 
@@ -1573,7 +1572,7 @@ def normalize_tool_call(tool_call_data: Dict[str, Any]) -> Optional[Dict[str, An
                 try:
                     arguments = json.loads(args_value)
                     break
-                except:
+                except Exception:
                     arguments = {"raw": args_value}
                     break
 
@@ -2287,7 +2286,7 @@ async def get_features():
 
     # Check guidellm
     try:
-        import guidellm
+        import guidellm  # noqa: F401
 
         features["guidellm"] = True
     except ImportError:
@@ -2363,8 +2362,8 @@ try:
     from .mcp_client import MCP_AVAILABLE, MCP_VERSION
 
     if MCP_AVAILABLE:
+        from .mcp_client.config import MCP_PRESETS, MCPServerConfig, MCPTransport
         from .mcp_client.manager import get_mcp_manager
-        from .mcp_client.config import MCPServerConfig, MCPTransport, MCP_PRESETS
 
         logger.info(f"MCP enabled: version {MCP_VERSION}")
 except ImportError as e:
@@ -2721,7 +2720,7 @@ async def get_hardware_capabilities():
                 accelerator = "amd"
                 # Extract GPU name from output (first line after GPU:)
                 lines = result.stdout.strip().split("\n")
-                gpu_info = next((l for l in lines if "BDF" in l or "GPU" in l), "AMD GPU")
+                gpu_info = next((line for line in lines if "BDF" in line or "GPU" in line), "AMD GPU")
                 logger.info(f"AMD GPU detected via amd-smi: {gpu_info}")
         except FileNotFoundError:
             logger.debug("amd-smi not found - no AMD GPU detected")
@@ -2739,7 +2738,7 @@ async def get_hardware_capabilities():
                 gpu_available = True
                 detection_method = "tpu-info"
                 accelerator = "tpu"
-                logger.info(f"TPU detected via tpu-info")
+                logger.info("TPU detected via tpu-info")
         except FileNotFoundError:
             # Fallback: Check for /dev/accel* devices (TPU device nodes)
             import glob
@@ -3106,7 +3105,7 @@ async def start_server(config: VLLMConfig):
             )
         config.remote_url = remote_url
 
-        await broadcast_log(f"[WEBUI] Run mode: REMOTE")
+        await broadcast_log("[WEBUI] Run mode: REMOTE")
         await broadcast_log(f"[WEBUI] Connecting to remote vLLM instance at {remote_url}...")
 
         # Build auth headers if API key provided
@@ -3202,7 +3201,7 @@ async def start_server(config: VLLMConfig):
                 current_served_model_name = None
             current_api_model_id = None
 
-            await broadcast_log(f"[WEBUI] ✓ Connected to remote vLLM instance")
+            await broadcast_log("[WEBUI] ✓ Connected to remote vLLM instance")
             await broadcast_log(f"[WEBUI] Model: {current_model_identifier}")
             await broadcast_log(f"[WEBUI] URL: {remote_url}")
 
@@ -3256,7 +3255,7 @@ async def start_server(config: VLLMConfig):
         model_display_name = extract_model_name_from_path(model_source, info)
 
         # Log detailed validation info
-        await broadcast_log(f"[WEBUI] ✓ Local model validated successfully")
+        await broadcast_log("[WEBUI] ✓ Local model validated successfully")
         await broadcast_log(f"[WEBUI] Model name: {model_display_name}")
         await broadcast_log(f"[WEBUI] Path: {model_source}")
         await broadcast_log(f"[WEBUI] Size: {info.get('size_mb', 'unknown')} MB")
@@ -3481,15 +3480,15 @@ async def start_server(config: VLLMConfig):
             await broadcast_log(
                 f"[WEBUI] CPU Settings - KV Cache: {config.cpu_kvcache_space}GB, Thread Binding: {config.cpu_omp_threads_bind}"
             )
-            await broadcast_log(f"[WEBUI] CPU Optimizations disabled for Apple Silicon compatibility")
-            await broadcast_log(f"[WEBUI] Using V1 engine for CPU mode")
+            await broadcast_log("[WEBUI] CPU Optimizations disabled for Apple Silicon compatibility")
+            await broadcast_log("[WEBUI] Using V1 engine for CPU mode")
         elif config.compute_mode == "metal":
             # Metal GPU mode (Apple Silicon)
             env["VLLM_TARGET_DEVICE"] = "metal"
             env["VLLM_USE_V1"] = "1"
             logger.info("Metal Mode - VLLM_TARGET_DEVICE=metal, VLLM_USE_V1=1")
-            await broadcast_log(f"[WEBUI] Metal Settings - Target Device: metal, V1 Engine: enabled")
-            await broadcast_log(f"[WEBUI] Using Apple Silicon GPU acceleration")
+            await broadcast_log("[WEBUI] Metal Settings - Target Device: metal, V1 Engine: enabled")
+            await broadcast_log("[WEBUI] Using Apple Silicon GPU acceleration")
         else:
             await broadcast_log("[WEBUI] Using GPU mode")
 
@@ -3577,13 +3576,13 @@ async def start_server(config: VLLMConfig):
                 template_file = f.name
             cmd.extend(["--chat-template", template_file])
             config.model_has_builtin_template = False  # Using custom override
-            await broadcast_log(f"[WEBUI] Using custom chat template from config (overrides model's built-in template)")
+            await broadcast_log("[WEBUI] Using custom chat template from config (overrides model's built-in template)")
         else:
             # Let vLLM auto-detect and use the model's built-in chat template
             # vLLM will read it from tokenizer_config.json automatically
             config.model_has_builtin_template = True  # Assume model has template (modern models do)
-            await broadcast_log(f"[WEBUI] Trusting vLLM to auto-detect chat template from tokenizer_config.json")
-            await broadcast_log(f"[WEBUI] vLLM will use model's built-in chat template automatically")
+            await broadcast_log("[WEBUI] Trusting vLLM to auto-detect chat template from tokenizer_config.json")
+            await broadcast_log("[WEBUI] vLLM will use model's built-in chat template automatically")
 
         # Tool calling support
         # Add --enable-auto-tool-choice and --tool-call-parser for function calling
@@ -3599,12 +3598,12 @@ async def start_server(config: VLLMConfig):
                 cmd.extend(["--tool-call-parser", tool_parser])
                 await broadcast_log(f"[WEBUI] 🔧 Tool calling enabled with parser: {tool_parser}")
             else:
-                await broadcast_log(f"[WEBUI] ⚠️ Tool calling requested but no parser detected for model")
+                await broadcast_log("[WEBUI] ⚠️ Tool calling requested but no parser detected for model")
                 await broadcast_log(
-                    f"[WEBUI] Set tool_call_parser explicitly or use a supported model (Llama 3.x, Mistral, etc.)"
+                    "[WEBUI] Set tool_call_parser explicitly or use a supported model (Llama 3.x, Mistral, etc.)"
                 )
         else:
-            await broadcast_log(f"[WEBUI] Tool calling disabled")
+            await broadcast_log("[WEBUI] Tool calling disabled")
 
         # Speculative decoding support (uses --speculative-config JSON)
         # Metal backend doesn't implement take_draft_token_ids, so spec-decode
@@ -3631,7 +3630,7 @@ async def start_server(config: VLLMConfig):
 
         # Start server based on mode
         if config.run_mode == "container":
-            await broadcast_log(f"[WEBUI] Starting vLLM container...")
+            await broadcast_log("[WEBUI] Starting vLLM container...")
 
             # Prepare config dict for container manager
             vllm_config_dict = {
@@ -3706,9 +3705,9 @@ async def start_server(config: VLLMConfig):
             if config.local_model_path:
                 await broadcast_log(f"[WEBUI] Model Source: Local ({model_source})")
             elif config.use_modelscope:
-                await broadcast_log(f"[WEBUI] Model Source: ModelScope (modelscope.cn)")
+                await broadcast_log("[WEBUI] Model Source: ModelScope (modelscope.cn)")
             else:
-                await broadcast_log(f"[WEBUI] Model Source: HuggingFace Hub")
+                await broadcast_log("[WEBUI] Model Source: HuggingFace Hub")
             if config.use_cpu:
                 await broadcast_log(f"[WEBUI] Mode: CPU (KV Cache: {config.cpu_kvcache_space}GB)")
             else:
@@ -3723,8 +3722,8 @@ async def start_server(config: VLLMConfig):
                 _log_reader_tasks[inst_id] = asyncio.create_task(read_logs_container(inst_id))
 
             # Wait for vLLM to be ready
-            await broadcast_log(f"[WEBUI] ⏳ Waiting for vLLM to initialize and become ready...", inst_id)
-            await broadcast_log(f"[WEBUI] This may take 30-120 seconds depending on model size...", inst_id)
+            await broadcast_log("[WEBUI] ⏳ Waiting for vLLM to initialize and become ready...", inst_id)
+            await broadcast_log("[WEBUI] This may take 30-120 seconds depending on model size...", inst_id)
 
             readiness = await container_manager.wait_for_ready(port=config.port, timeout=180)
 
@@ -3746,19 +3745,19 @@ async def start_server(config: VLLMConfig):
 
                 if error_msg == "timeout":
                     await broadcast_log(f"[WEBUI] ⚠️ Warning: vLLM did not become ready within {elapsed}s", inst_id)
-                    await broadcast_log(f"[WEBUI] Container is running but may still be initializing...", inst_id)
-                    await broadcast_log(f"[WEBUI] Check the logs above for model download/loading progress", inst_id)
+                    await broadcast_log("[WEBUI] Container is running but may still be initializing...", inst_id)
+                    await broadcast_log("[WEBUI] Check the logs above for model download/loading progress", inst_id)
                     await broadcast_log(
-                        f"[WEBUI] You can try sending requests - they may work once initialization completes",
+                        "[WEBUI] You can try sending requests - they may work once initialization completes",
                         inst_id,
                     )
                 elif error_msg == "container_stopped":
                     await broadcast_log(f"[WEBUI] ❌ Error: Container stopped unexpectedly after {elapsed}s", inst_id)
-                    await broadcast_log(f"[WEBUI] Check the logs above for errors", inst_id)
+                    await broadcast_log("[WEBUI] Check the logs above for errors", inst_id)
                     raise HTTPException(status_code=500, detail="Container stopped during startup")
                 else:
                     await broadcast_log(f"[WEBUI] ⚠️ Warning: Could not verify readiness: {error_msg}", inst_id)
-                    await broadcast_log(f"[WEBUI] Container may still be working - check logs for details", inst_id)
+                    await broadcast_log("[WEBUI] Container may still be working - check logs for details", inst_id)
 
                 return {
                     "status": "started",
@@ -3769,7 +3768,7 @@ async def start_server(config: VLLMConfig):
                 }
 
         else:  # subprocess mode
-            await broadcast_log(f"[WEBUI] Starting vLLM subprocess...")
+            await broadcast_log("[WEBUI] Starting vLLM subprocess...")
             await broadcast_log(f"[WEBUI] Command: {' '.join(cmd)}")
 
             # Start subprocess
@@ -3798,9 +3797,9 @@ async def start_server(config: VLLMConfig):
             if config.local_model_path:
                 await broadcast_log(f"[WEBUI] Model Source: Local ({model_source})", inst_id)
             elif config.use_modelscope:
-                await broadcast_log(f"[WEBUI] Model Source: ModelScope (modelscope.cn)", inst_id)
+                await broadcast_log("[WEBUI] Model Source: ModelScope (modelscope.cn)", inst_id)
             else:
-                await broadcast_log(f"[WEBUI] Model Source: HuggingFace Hub", inst_id)
+                await broadcast_log("[WEBUI] Model Source: HuggingFace Hub", inst_id)
             if config.use_cpu:
                 await broadcast_log(f"[WEBUI] Mode: CPU (KV Cache: {config.cpu_kvcache_space}GB)", inst_id)
             else:
@@ -3844,7 +3843,7 @@ async def stop_server():
             await broadcast_log("[WEBUI] Stopping vLLM container...")
 
             # Stop container
-            result = await container_manager.stop_container()
+            await container_manager.stop_container()
 
             container_id = None
             await broadcast_log("[WEBUI] vLLM container stopped")
@@ -4115,7 +4114,7 @@ async def create_instance(request: Request):
         return {"backend": entry.to_dict()}
 
     raise HTTPException(
-        status_code=400, detail=f"Creating managed backends via this endpoint is not yet supported. Use /api/start."
+        status_code=400, detail="Creating managed backends via this endpoint is not yet supported. Use /api/start."
     )
 
 
@@ -4780,10 +4779,10 @@ async def chat(request: ChatRequestWithStopTokens):
         base_url = get_vllm_base_url()
         url = f"{base_url}/v1/chat/completions"
 
-        logger.info(f"=== CHAT ENDPOINT ROUTING DEBUG ===")
+        logger.info("=== CHAT ENDPOINT ROUTING DEBUG ===")
         logger.info(f"current_run_mode: {current_run_mode}")
         logger.info(f"✓ Using URL: {url}")
-        logger.info(f"=====================================")
+        logger.info("=====================================")
 
         # Convert messages to OpenAI format with full tool calling support
         messages_dict = []
@@ -4870,9 +4869,7 @@ async def chat(request: ChatRequestWithStopTokens):
                     # String values: "auto", "none"
                     # Note: "required" is disabled as it can crash vLLM servers
                     if request.tool_choice == "required":
-                        logger.warning(
-                            f"⚠️ tool_choice 'required' is disabled (can crash server) - using 'auto' instead"
-                        )
+                        logger.warning("⚠️ tool_choice 'required' is disabled (can crash server) - using 'auto' instead")
                         payload["tool_choice"] = "auto"
                     else:
                         payload["tool_choice"] = request.tool_choice
@@ -4913,7 +4910,7 @@ async def chat(request: ChatRequestWithStopTokens):
                 logger.info(f"📋 JSON Schema structured output enabled: {request.response_format.json_schema.name}")
             elif request.response_format.type == "json_object":
                 payload["response_format"] = {"type": "json_object"}
-                logger.info(f"📋 JSON Object mode enabled")
+                logger.info("📋 JSON Object mode enabled")
         elif request.structured_outputs:
             # vLLM structured_outputs format (v0.12+)
             # Sent as a top-level "structured_outputs" dict in the request body
@@ -4926,7 +4923,7 @@ async def chat(request: ChatRequestWithStopTokens):
                 logger.info(f"📋 Structured output (regex) enabled: {request.structured_outputs.regex}")
             elif request.structured_outputs.grammar:
                 so_body["grammar"] = request.structured_outputs.grammar
-                logger.info(f"📋 Structured output (grammar) enabled")
+                logger.info("📋 Structured output (grammar) enabled")
 
             if so_body:
                 payload["structured_outputs"] = so_body
@@ -4944,7 +4941,7 @@ async def chat(request: ChatRequestWithStopTokens):
             logger.warning(f"Using stop tokens from request (not recommended): {request.stop_tokens}")
         else:
             # Let vLLM handle stop tokens automatically from model's tokenizer (RECOMMENDED)
-            logger.info(f"✓ Letting vLLM handle stop tokens automatically (recommended for /v1/chat/completions)")
+            logger.info("✓ Letting vLLM handle stop tokens automatically (recommended for /v1/chat/completions)")
 
         # Log the request payload being sent to vLLM
         # Truncate base64 image data in logs to avoid flooding
@@ -4959,11 +4956,11 @@ async def chat(request: ChatRequestWithStopTokens):
                 return {k: _truncate_for_log(v, max_str_len) for k, v in obj.items()}
             return obj
 
-        logger.info(f"=== vLLM REQUEST ===")
+        logger.info("=== vLLM REQUEST ===")
         logger.info(f"URL: {url}")
         logger.info(f"Payload keys: {list(payload.keys())}")
         logger.info(f"Messages ({len(messages_dict)}): {_truncate_for_log(messages_dict)}")
-        logger.info(f"==================")
+        logger.info("==================")
 
         async def generate_stream():
             """Generator for streaming responses"""
@@ -4980,12 +4977,12 @@ async def chat(request: ChatRequestWithStopTokens):
                     try:
                         if response.status != 200:
                             text = await response.text()
-                            logger.error(f"=== vLLM ERROR RESPONSE ===")
+                            logger.error("=== vLLM ERROR RESPONSE ===")
                             logger.error(f"URL: {resolved_url}")
                             logger.error(f"Status: {response.status}")
                             logger.error(f"Response headers: {dict(response.headers)}")
                             logger.error(f"Error: {text}")
-                            logger.error(f"==========================")
+                            logger.error("==========================")
                             error_message = (
                                 text.strip() if text.strip() else f"Upstream returned HTTP {response.status}"
                             )
@@ -4994,7 +4991,7 @@ async def chat(request: ChatRequestWithStopTokens):
                             yield "data: [DONE]\n\n"
                             return
 
-                        logger.info(f"=== vLLM STREAMING RESPONSE START ===")
+                        logger.info("=== vLLM STREAMING RESPONSE START ===")
                         # Stream the response chunk by chunk
                         # OpenAI-compatible chat completions format
                         try:
@@ -5042,7 +5039,7 @@ async def chat(request: ChatRequestWithStopTokens):
                                                                     "tool_calls"
                                                                 ):
                                                                     logger.warning(
-                                                                        f"⚠️ finish_reason is 'tool_calls' but no tool_calls data in delta!"
+                                                                        "⚠️ finish_reason is 'tool_calls' but no tool_calls data in delta!"
                                                                     )
                                                                     logger.warning(f"⚠️ Full chunk data: {data}")
                                                 except Exception as parse_err:
@@ -5067,10 +5064,10 @@ async def chat(request: ChatRequestWithStopTokens):
                             return
 
                         # Log the complete response
-                        logger.info(f"=== vLLM COMPLETE RESPONSE ===")
+                        logger.info("=== vLLM COMPLETE RESPONSE ===")
                         logger.info(f"Full text: {full_response_text}")
                         logger.info(f"Length: {len(full_response_text)} chars")
-                        logger.info(f"===============================")
+                        logger.info("===============================")
                     finally:
                         response.release()
 
@@ -5110,18 +5107,18 @@ async def chat(request: ChatRequestWithStopTokens):
                 try:
                     if response.status != 200:
                         text = await response.text()
-                        logger.error(f"=== vLLM ERROR RESPONSE (non-streaming) ===")
+                        logger.error("=== vLLM ERROR RESPONSE (non-streaming) ===")
                         logger.error(f"URL: {resolved_url}")
                         logger.error(f"Status: {response.status}")
                         logger.error(f"Error: {text}")
-                        logger.error(f"===========================================")
+                        logger.error("===========================================")
                         # Provide meaningful error message even if vLLM returns empty body
                         error_detail = text.strip() if text.strip() else f"vLLM server returned HTTP {response.status}"
                         raise HTTPException(status_code=response.status, detail=error_detail)
 
                     data = await response.json()
                     # Log the complete response
-                    logger.info(f"=== vLLM RESPONSE (non-streaming) ===")
+                    logger.info("=== vLLM RESPONSE (non-streaming) ===")
                     logger.info(f"Full response: {data}")
                     if "choices" in data and len(data["choices"]) > 0:
                         message = data["choices"][0].get("message", {})
@@ -5137,7 +5134,7 @@ async def chat(request: ChatRequestWithStopTokens):
                             for tc in tool_calls:
                                 func = tc.get("function", {})
                                 logger.info(f"  - {func.get('name', 'unknown')}: {func.get('arguments', '{}')}")
-                    logger.info(f"=====================================")
+                    logger.info("=====================================")
                     return data
                 finally:
                     response.release()
@@ -5656,7 +5653,7 @@ async def sync_recipes(request: Optional[dict] = None):
     try:
         # Check if requests is installed
         try:
-            import requests
+            import requests  # noqa: F401
         except ImportError:
             return JSONResponse(
                 status_code=400,
@@ -5686,9 +5683,6 @@ async def sync_recipes(request: Optional[dict] = None):
         )
 
         if result.returncode == 0:
-            # Parse output for summary
-            output_lines = result.stdout.strip().split("\n")
-
             # Reload the catalog to get updated data
             recipes_file = BASE_DIR / "recipes" / "recipes_catalog.json"
             catalog_info = {}
@@ -5947,7 +5941,6 @@ async def browse_directories(request: dict):
     Response: {"directories": [...], "current_path": "..."}
     """
     try:
-        import os
         from pathlib import Path
 
         requested_path = request.get("path", "~")
@@ -5993,91 +5986,6 @@ async def browse_directories(request: dict):
     except Exception as e:
         logger.error(f"Error browsing directories: {e}")
         return JSONResponse(status_code=500, content={"error": f"Failed to browse directories: {str(e)}"})
-
-
-class LocalModelValidationRequest(BaseModel):
-    """Request to validate a local model path"""
-
-    path: str
-
-
-class LocalModelValidationResponse(BaseModel):
-    """Response for local model path validation"""
-
-    valid: bool
-    message: str
-    model_name: Optional[str] = None
-    model_type: Optional[str] = None
-    has_tokenizer: bool = False
-    has_config: bool = False
-    estimated_size_mb: Optional[float] = None
-
-
-@app.post("/api/models/validate-local")
-async def validate_local_model(request: LocalModelValidationRequest) -> LocalModelValidationResponse:
-    """Validate a local model directory"""
-    try:
-        model_path = Path(request.path)
-
-        # Check if path exists
-        if not model_path.exists():
-            return LocalModelValidationResponse(valid=False, message=f"Path does not exist: {request.path}")
-
-        # Check if it's a directory
-        if not model_path.is_dir():
-            return LocalModelValidationResponse(valid=False, message=f"Path must be a directory, not a file")
-
-        # Check for required files
-        config_file = model_path / "config.json"
-        tokenizer_config = model_path / "tokenizer_config.json"
-        has_config = config_file.exists()
-        has_tokenizer = tokenizer_config.exists()
-
-        if not has_config:
-            return LocalModelValidationResponse(
-                valid=False,
-                message=f"Invalid model directory: missing config.json",
-                has_config=has_config,
-                has_tokenizer=has_tokenizer,
-            )
-
-        # Try to read model info from config.json
-        model_type = None
-        model_name = model_path.name
-        try:
-            import json
-
-            with open(config_file, "r") as f:
-                config_data = json.load(f)
-                model_type = config_data.get("model_type", "unknown")
-                # Try to get architectures
-                architectures = config_data.get("architectures", [])
-                if architectures:
-                    model_type = architectures[0]
-        except Exception as e:
-            logger.warning(f"Could not read config.json: {e}")
-
-        # Estimate directory size
-        estimated_size_mb = None
-        try:
-            total_size = sum(f.stat().st_size for f in model_path.rglob("*") if f.is_file())
-            estimated_size_mb = total_size / (1024 * 1024)  # Convert to MB
-        except Exception as e:
-            logger.warning(f"Could not estimate model size: {e}")
-
-        return LocalModelValidationResponse(
-            valid=True,
-            message=f"Valid model directory",
-            model_name=model_name,
-            model_type=model_type,
-            has_config=has_config,
-            has_tokenizer=has_tokenizer,
-            estimated_size_mb=round(estimated_size_mb, 2) if estimated_size_mb else None,
-        )
-
-    except Exception as e:
-        logger.error(f"Error validating local model: {e}")
-        return LocalModelValidationResponse(valid=False, message=f"Error validating path: {str(e)}")
 
 
 @app.get("/api/chat/template")
@@ -6654,9 +6562,9 @@ async def run_benchmark(
     global benchmark_results, current_model_identifier, current_run_mode
 
     try:
-        import aiohttp
         import time
-        import random
+
+        import aiohttp
         import numpy as np
 
         await broadcast_log(
@@ -6783,7 +6691,7 @@ async def run_benchmark(
                 f"[BENCHMARK] Token Throughput: {tokens_per_second:.2f} tok/s, Total Tokens: {int(total_tokens)}"
             )
         else:
-            await broadcast_log(f"[BENCHMARK] Failed - No successful requests")
+            await broadcast_log("[BENCHMARK] Failed - No successful requests")
             benchmark_results = None
 
     except asyncio.CancelledError:
@@ -6824,7 +6732,7 @@ async def run_guidellm_benchmark(
             await broadcast_log(f"[GUIDELLM] ERROR: {error_msg}")
             await broadcast_log(f"[GUIDELLM] Python executable: {sys.executable}")
             await broadcast_log(f"[GUIDELLM] Python path: {sys.path}")
-            await broadcast_log(f"[GUIDELLM] Run: pip install guidellm")
+            await broadcast_log("[GUIDELLM] Run: pip install guidellm")
             benchmark_results = None
             return
 
@@ -6834,7 +6742,6 @@ async def run_guidellm_benchmark(
         await broadcast_log(f"[GUIDELLM] Target: {target_url}")
 
         # Run GuideLLM benchmark using subprocess (since GuideLLM CLI is simpler)
-        import json
         import subprocess
 
         # Use the same Python executable that's running this application
@@ -6867,24 +6774,24 @@ async def run_guidellm_benchmark(
                     python_exec = None  # Will use guidellm command directly
                 else:
                     await broadcast_log(
-                        f"[GUIDELLM] WARNING: GuideLLM CLI verification failed, will attempt to run anyway"
+                        "[GUIDELLM] WARNING: GuideLLM CLI verification failed, will attempt to run anyway"
                     )
                     await broadcast_log(
-                        f"[GUIDELLM] If benchmark fails, ensure GuideLLM is properly installed: pip install guidellm"
+                        "[GUIDELLM] If benchmark fails, ensure GuideLLM is properly installed: pip install guidellm"
                     )
             else:
                 await broadcast_log(f"[GUIDELLM] CLI verified: {python_exec}")
         except subprocess.TimeoutExpired:
             # Don't fail - just warn and continue
-            await broadcast_log(f"[GUIDELLM] WARNING: CLI check timed out (30s), will attempt to run benchmark anyway")
+            await broadcast_log("[GUIDELLM] WARNING: CLI check timed out (30s), will attempt to run benchmark anyway")
             await broadcast_log(
-                f"[GUIDELLM] If you encounter issues, ensure GuideLLM is installed in your venv: pip install guidellm"
+                "[GUIDELLM] If you encounter issues, ensure GuideLLM is installed in your venv: pip install guidellm"
             )
         except Exception as e:
             # Don't fail - just warn and continue
             await broadcast_log(f"[GUIDELLM] WARNING: Error checking GuideLLM installation: {e}")
             await broadcast_log(
-                f"[GUIDELLM] Will attempt to run benchmark anyway. Ensure GuideLLM is installed: pip install guidellm"
+                "[GUIDELLM] Will attempt to run benchmark anyway. Ensure GuideLLM is installed: pip install guidellm"
             )
 
         # Create a temporary JSON file for results
@@ -7020,14 +6927,14 @@ async def run_guidellm_benchmark(
                         import json as json_module
 
                         json_module.loads(json_output)
-                        await broadcast_log(f"[GUIDELLM] ✅ JSON is valid")
+                        await broadcast_log("[GUIDELLM] ✅ JSON is valid")
                     except Exception as json_err:
                         await broadcast_log(f"[GUIDELLM] ⚠️ JSON validation failed: {json_err}")
                 else:
-                    await broadcast_log(f"[GUIDELLM] ⚠️ JSON file is empty")
+                    await broadcast_log("[GUIDELLM] ⚠️ JSON file is empty")
             else:
                 await broadcast_log(f"[GUIDELLM] ⚠️ JSON output file not found at {result_file.name}")
-                await broadcast_log(f"[GUIDELLM] Checking if guidellm created a file in current directory...")
+                await broadcast_log("[GUIDELLM] Checking if guidellm created a file in current directory...")
                 # Sometimes guidellm creates files with different names
                 import glob
 
@@ -7067,9 +6974,9 @@ async def run_guidellm_benchmark(
                             if len(parts) >= 8:
                                 p99_latency = float(parts[7]) * 1000  # p99
 
-                            await broadcast_log(f"[GUIDELLM] 📊 Parsed metrics from output")
+                            await broadcast_log("[GUIDELLM] 📊 Parsed metrics from output")
                             break
-                        except (ValueError, IndexError) as e:
+                        except (ValueError, IndexError):
                             await broadcast_log(f"[GUIDELLM] Debug: Failed to parse line: {line}")
                             await broadcast_log(f"[GUIDELLM] Debug: Parts: {parts}")
                             continue
@@ -7088,7 +6995,7 @@ async def run_guidellm_benchmark(
                 json_output=json_output,  # Store JSON output for display
             )
 
-            await broadcast_log(f"[GUIDELLM] ✅ Completed!")
+            await broadcast_log("[GUIDELLM] ✅ Completed!")
             await broadcast_log(f"[GUIDELLM] 📊 Throughput: {benchmark_results.throughput:.2f} req/s")
             await broadcast_log(f"[GUIDELLM] ⚡ Token Throughput: {benchmark_results.tokens_per_second:.2f} tok/s")
             await broadcast_log(f"[GUIDELLM] ⏱️  Avg Latency: {benchmark_results.avg_latency:.2f} ms")
@@ -7115,7 +7022,7 @@ async def run_guidellm_benchmark(
             # Clean up temp file
             try:
                 os.unlink(result_file.name)
-            except:
+            except Exception:
                 pass
 
     except asyncio.CancelledError:
@@ -7397,7 +7304,6 @@ async def start_omni_server(config: OmniConfig):
                         pass
 
                 try:
-                    import torch
                     from vllm_omni.entrypoints.omni import Omni
 
                     # Create the Omni model
@@ -7688,7 +7594,7 @@ async def start_omni_server(config: OmniConfig):
             await broadcast_omni_log(f"[OMNI] Container started: {omni_container_id[:12]}")
             await broadcast_omni_log(f"[OMNI] Model: {config.model}")
             await broadcast_omni_log(f"[OMNI] Port: {config.port}")
-            await broadcast_omni_log(f"[OMNI] Waiting for model to load...")
+            await broadcast_omni_log("[OMNI] Waiting for model to load...")
 
             return {
                 "status": "started",
@@ -8169,10 +8075,11 @@ async def generate_audio(request: AudioGenerationRequest) -> AudioGenerationResp
         try:
             # Run generation in thread pool to avoid blocking
             def generate_audio_inprocess():
-                import torch
                 import base64
                 import io
+
                 import numpy as np
+                import torch
                 from vllm_omni.inputs.data import OmniDiffusionSamplingParams
 
                 # Set up generator for reproducibility
@@ -8319,8 +8226,6 @@ async def generate_audio(request: AudioGenerationRequest) -> AudioGenerationResp
         timeout = aiohttp.ClientTimeout(total=300)  # 5 minutes for audio generation
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(omni_url, json=payload, headers=omni_headers) as response:
-                content_type = response.headers.get("Content-Type", "")
-
                 if response.status != 200:
                     error_text = await response.text()
                     logger.error(f"vLLM-Omni audio error: {error_text}")
@@ -9053,14 +8958,21 @@ def find_claude_command() -> Optional[str]:
         if p.exists() and os.access(p, os.X_OK):
             return str(p)
 
-    # When running as root/sudo, also check real user home dirs under /home
+    # When running as root/sudo, also check real user home dirs under /home.
+    # Listing /home can raise PermissionError/OSError in restricted/sandboxed
+    # environments (e.g. non-root containers, macOS sandboxes) even when the
+    # directory itself "exists" per is_dir() -- don't let that crash the
+    # /api/claude-code/status endpoint.
     home_dirs = Path("/home")
-    if home_dirs.is_dir():
-        for user_home in home_dirs.iterdir():
-            for sub in [".local/bin/claude", ".npm-global/bin/claude"]:
-                p = user_home / sub
-                if p.exists() and os.access(p, os.X_OK):
-                    return str(p)
+    try:
+        if home_dirs.is_dir():
+            for user_home in home_dirs.iterdir():
+                for sub in [".local/bin/claude", ".npm-global/bin/claude"]:
+                    p = user_home / sub
+                    if p.exists() and os.access(p, os.X_OK):
+                        return str(p)
+    except OSError as e:
+        logger.debug(f"Could not scan /home for claude installs: {e}")
 
     # Check npm global bin
     try:
@@ -9340,7 +9252,7 @@ async def websocket_ttyd_proxy(websocket: WebSocket):
         logger.error(traceback.format_exc())
         try:
             await websocket.close(code=1011, reason=str(e))
-        except:
+        except Exception:
             pass
 
 

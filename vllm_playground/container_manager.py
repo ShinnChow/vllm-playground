@@ -5,14 +5,14 @@ Uses subprocess for maximum compatibility on macOS
 """
 
 import asyncio
+import json
 import logging
 import os
-import json
 import platform
 import shutil
 import subprocess
 import time
-from typing import Optional, Dict, Any, AsyncIterator
+from typing import Any, AsyncIterator, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -221,7 +221,7 @@ class VLLMContainerManager:
         # Core vLLM parameters (read by start_vllm.sh)
         env.extend(["-e", f"VLLM_MODEL={vllm_config.get('model_source', vllm_config.get('model'))}"])
         env.extend(["-e", "VLLM_HOST=0.0.0.0"])  # Must be 0.0.0.0 inside container
-        env.extend(["-e", f"VLLM_PORT=8000"])  # Internal port (mapped to host)
+        env.extend(["-e", "VLLM_PORT=8000"])  # Internal port (mapped to host)
 
         # Dtype
         if vllm_config.get("use_cpu", False) and vllm_config.get("dtype", "auto") == "auto":
@@ -445,19 +445,19 @@ class VLLMContainerManager:
 
             # Check if config changed
             if stored_hash != current_hash:
-                logger.info(f"Configuration changed - will recreate container")
+                logger.info("Configuration changed - will recreate container")
                 logger.info(f"  Old hash: {stored_hash}")
                 logger.info(f"  New hash: {current_hash}")
                 return True
 
             # Check if image changed (critical for CPU/GPU mode switching)
             if stored_image != expected_image:
-                logger.info(f"Container image changed - will recreate container")
+                logger.info("Container image changed - will recreate container")
                 logger.info(f"  Current image: {stored_image}")
                 logger.info(f"  Required image: {expected_image}")
                 return True
 
-            logger.info(f"Configuration and image unchanged - will reuse existing container")
+            logger.info("Configuration and image unchanged - will reuse existing container")
             return False
 
         except Exception as e:
@@ -638,7 +638,7 @@ class VLLMContainerManager:
             logger.info(f"Environment: {config['environment']}")
             logger.info(f"Volumes: {config['volumes']}")
             logger.info(f"Ports: {config['ports']}")
-            logger.info(f"Using container's default entrypoint (start_vllm.sh)")
+            logger.info("Using container's default entrypoint (start_vllm.sh)")
 
             # Build podman run command
             podman_cmd = [
@@ -1047,19 +1047,19 @@ class VLLMContainerManager:
 
             # Check if config changed
             if stored_hash != current_hash:
-                logger.info(f"vLLM-Omni configuration changed - will recreate container")
+                logger.info("vLLM-Omni configuration changed - will recreate container")
                 logger.info(f"  Old hash: {stored_hash}")
                 logger.info(f"  New hash: {current_hash}")
                 return True
 
             # Check if image changed
             if stored_image != expected_image:
-                logger.info(f"vLLM-Omni image changed - will recreate container")
+                logger.info("vLLM-Omni image changed - will recreate container")
                 logger.info(f"  Current image: {stored_image}")
                 logger.info(f"  Required image: {expected_image}")
                 return True
 
-            logger.info(f"vLLM-Omni configuration unchanged - will reuse existing container")
+            logger.info("vLLM-Omni configuration unchanged - will reuse existing container")
             return False
 
         except Exception as e:

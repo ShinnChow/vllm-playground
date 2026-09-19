@@ -1,0 +1,250 @@
+name: CI
+
+# Covers both tiers of the branching strategy with a single workflow file:
+#   - feat/* -> development PRs/pushes
+#   - development -> main PRs/pushes
+# See the CI/CD Pipeline Design plan for the full rationale.
+on:
+  pull_request:
+    branches: [development, main]
+  push:
+    branches: [development, main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  lint:
+    name: Lint & structure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install lint tooling
+        run: pip install ruff
+      - name: ruff check
+        run: ruff check .
+      - name: ruff format --check
+        run: ruff format --check .
+      - name: Verify single-source-of-truth project structure
+        run: python scripts/verify_structure.py
+
+  unit-tests:
+    name: Unit tests (py${{ matrix.python-version }})
+    needs: lint
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install package with dev extras
+        run: pip install -e ".[dev]"
+      - name: Run unit tests
+        run: pytest tests/unit -v --cov=vllm_playground --cov-report=xml --cov-report=term-missing
+      - name: Upload coverage artifact
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-unit
+          path: coverage.xml
+
+  api-tests:
+    name: API tests (FastAPI TestClient)
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package with dev + optional extras
+        run: pip install -e ".[dev,mcp,benchmark]"
+      - name: Run API tests
+        run: pytest tests/api -v
+
+  container-manager-tests:
+    name: Container manager tests (real podman)
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+          podman info
+      - name: Install package with dev extras
+        run: pip install -e ".[dev]"
+      - name: Run container manager tests
+        run: pytest tests/container -v
+
+  k8s-manager-tests:
+    name: Kubernetes manager tests (kind)
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: vllm-playground-ci
+      - name: Install package with dev extras (includes kubernetes client)
+        run: pip install -e ".[dev]"
+      - name: Run Kubernetes manager tests
+        run: pytest tests/k8s -v
+
+  frontend-smoke:
+    name: Frontend smoke tests (Playwright)
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package with dev extras
+        run: pip install -e ".[dev]"
+      - name: Install Playwright browsers
+        run: playwright install --with-deps chromium
+      - name: Run frontend smoke tests
+        run: pytest tests/frontend -v
+
+  package-build:
+    name: Package build (sdist/wheel)
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build tooling
+        run: pip install build twine
+      - name: Build sdist and wheel
+        run: python -m build
+      - name: Check package metadata (twine check)
+        run: twine check dist/*
+      - name: Install built wheel into a clean venv and smoke test the CLI
+        run: |
+          python -m venv /tmp/wheel-venv
+          /tmp/wheel-venv/bin/pip install dist/*.whl
+          /tmp/wheel-venv/bin/vllm-playground --version
+          # "status" exits 1 when nothing is running -- that IS the expected
+          # state for a fresh install, so don't fail the build on that.
+          /tmp/wheel-venv/bin/vllm-playground status || true
+
+  container-build-check:
+    name: Container build check (${{ matrix.image.name }})
+    needs: lint
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - name: vllm-playground (Podman orchestrator)
+            containerfile: containers/Containerfile.vllm-playground
+          - name: openshift (Kubernetes orchestrator)
+            containerfile: openshift/Containerfile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.image.containerfile }}
+          push: false
+          load: true
+          tags: vllm-playground-ci:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Boot image and smoke test /api/status
+        run: |
+          docker run -d --name ci-smoke -p 7860:7860 vllm-playground-ci:test
+          ok=0
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:7860/api/status > /dev/null; then ok=1; break; fi
+            sleep 2
+          done
+          docker logs ci-smoke || true
+          docker rm -f ci-smoke || true
+          if [ "$ok" -ne 1 ]; then
+            echo "::error::Container never became healthy on /api/status"
+            exit 1
+          fi
+
+  manifest-validate:
+    name: Validate Kubernetes/OpenShift manifests
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install kubeconform
+        run: |
+          curl -sSL -o kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz
+          tar xzf kubeconform.tar.gz kubeconform
+          sudo mv kubeconform /usr/local/bin/
+      - name: Validate manifests
+        run: |
+          kubeconform -strict -ignore-missing-schemas -summary \
+            deployments/*.yaml openshift/manifests/*.yaml
+
+  dependency-audit:
+    name: Dependency vulnerability audit (non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pip-audit
+        run: pip install pip-audit
+      - name: Audit runtime dependencies
+        run: pip-audit -r requirements.txt
+
+  # Single required status check to point branch protection at instead of
+  # every individual (and matrixed) job name above.
+  ci-summary:
+    name: CI summary
+    if: always()
+    needs:
+      - lint
+      - unit-tests
+      - api-tests
+      - container-manager-tests
+      - k8s-manager-tests
+      - frontend-smoke
+      - package-build
+      - container-build-check
+      - manifest-validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check required jobs
+        run: |
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            echo "One or more required CI jobs failed."
+            exit 1
+          fi
+          echo "All required CI jobs passed."
