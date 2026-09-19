@@ -15,8 +15,40 @@ import time
 
 import pytest
 import uvicorn
+from _pytest.monkeypatch import MonkeyPatch
 
 import vllm_playground.app as app_module
+import vllm_playground.image_catalog as image_catalog_module
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_live_docker_hub_calls():
+    """Force the Settings tab's image-catalog fetch onto its fallback path.
+
+    The Settings view triggers GET /api/settings/image-catalog on render,
+    which fetches live from Docker Hub for 5 image repos concurrently (real
+    network, up to a genuine 10s total timeout each -- see
+    image_catalog._fetch_tags_from_docker_hub). On a shared GitHub Actions
+    runner that call can be slow or rate-limited, which previously made
+    test_settings_view_shows_container_image_catalog_section flaky: it
+    retried for Playwright's default 5s and still saw an empty view because
+    Docker Hub hadn't answered (or timed out) yet.
+
+    These are UI smoke tests ("does the view render"), not a test of Docker
+    Hub reachability -- that's already covered by
+    tests/unit/test_image_catalog.py with proper mocking. Making the fetch
+    fail immediately forces the fast, deterministic fallback-list path
+    every time, regardless of the CI runner's real-world network to
+    Docker Hub.
+    """
+    mp = MonkeyPatch()
+
+    async def _always_unreachable(repo):
+        raise RuntimeError("network disabled for frontend smoke tests")
+
+    mp.setattr(image_catalog_module, "_fetch_tags_from_docker_hub", _always_unreachable)
+    yield
+    mp.undo()
 
 
 def _free_port():
