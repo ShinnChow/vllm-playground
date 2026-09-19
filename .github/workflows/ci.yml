@@ -167,8 +167,9 @@ jobs:
   # Podman one takes ~7-8 minutes, mostly `microdnf install
   # podman-remote`) and container/OpenShift orchestration is not the
   # primary, actively-developed use case (that's local/CLI usage). They
-  # still run nightly -- see .github/workflows/nightly.yml -- so breakage
-  # is caught within a day instead of blocking every PR.
+  # run as a required gate right before every real release instead -- see
+  # .github/workflows/deep-checks.yml, called from release.yml -- so
+  # breakage never actually ships, without paying the cost on every PR.
 
   manifest-validate:
     name: Validate Kubernetes/OpenShift manifests
