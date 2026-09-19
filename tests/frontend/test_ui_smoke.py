@@ -13,6 +13,7 @@ appear, which is both correct and much faster.
 """
 
 import pytest
+from playwright.sync_api import expect
 
 IGNORED_CONSOLE_SUBSTRINGS = (
     # Favicon/asset 404s are cosmetic and unrelated to app logic; the nav
@@ -67,10 +68,12 @@ def test_can_switch_to_each_main_view(page, live_server_url, view_name):
     page.wait_for_selector("#vllm-server-view")
 
     page.click(f'.nav-item[data-view="{view_name}"]')
-    page.wait_for_timeout(200)
 
+    # `expect()` auto-retries (up to its default timeout) instead of a fixed
+    # sleep, which was flaky under CI runner load: sometimes fast enough
+    # locally/in a PR run, sometimes not on a slower/busier runner.
     view = page.locator(f"#{view_name}-view")
-    assert view.is_visible(), f"Expected #{view_name}-view to become visible after clicking its nav item"
+    expect(view).to_be_visible()
     assert _real_errors(errors) == []
 
 
@@ -78,13 +81,15 @@ def test_settings_view_shows_container_image_catalog_section(page, live_server_u
     page.goto(live_server_url)
     page.wait_for_selector("#vllm-server-view")
     page.click('.nav-item[data-view="settings"]')
-    page.wait_for_timeout(300)
 
     settings_view = page.locator("#settings-view")
-    assert settings_view.is_visible()
+    expect(settings_view).to_be_visible()
     # Settings content is rendered client-side (empty container in the HTML
     # shell) -- assert it actually got populated rather than staying blank.
-    assert settings_view.inner_html().strip() != ""
+    # `expect(...).not_to_have_text("")` retries (up to Playwright's default
+    # timeout) instead of a fixed sleep before checking once, which was
+    # flaky under CI runner load.
+    expect(settings_view).not_to_have_text("")
 
 
 def test_mcp_servers_view_renders_without_crashing(page, live_server_url):
@@ -93,7 +98,6 @@ def test_mcp_servers_view_renders_without_crashing(page, live_server_url):
     page.wait_for_selector("#vllm-server-view")
 
     page.click('.nav-item[data-view="mcp-config"]')
-    page.wait_for_timeout(300)
 
-    assert page.locator("#mcp-config-view").is_visible()
+    expect(page.locator("#mcp-config-view")).to_be_visible()
     assert _real_errors(errors) == []
