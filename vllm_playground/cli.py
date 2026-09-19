@@ -286,24 +286,17 @@ def cmd_pull(args):
 
     # Image definitions (must match container_manager.py)
     # Note: v0.12.0+ required for Anthropic Messages API (Claude Code support)
-    NVIDIA_IMAGE = "docker.io/vllm/vllm-openai:v0.12.0"
-    AMD_IMAGE = "docker.io/rocm/vllm:latest"
+    NVIDIA_IMAGE = "docker.io/vllm/vllm-openai:v0.29.0"
+    AMD_IMAGE = "docker.io/vllm/vllm-openai-rocm:v0.29.0"
     TPU_IMAGE = "docker.io/vllm/vllm-tpu:latest"
-    CPU_IMAGE_MACOS = "quay.io/rh_ee_micyang/vllm-mac:v0.11.0"
-    CPU_IMAGE_X86 = "quay.io/rh_ee_micyang/vllm-cpu:v0.11.0"
-    # vLLM-Omni images for image/video/audio generation
-    OMNI_NVIDIA_IMAGE = "docker.io/vllm/vllm-omni:v0.14.0rc1"
-    OMNI_AMD_IMAGE = "docker.io/vllm/vllm-omni-rocm:v0.14.0rc1"
+    # Official multi-arch CPU image (replaces self-built Quay vllm-mac/vllm-cpu images)
+    CPU_IMAGE = "docker.io/vllm/vllm-openai-cpu:v0.29.0"
+    # vLLM-Omni images for image/video/audio generation (latest stable; matches vLLM 0.28 line)
+    OMNI_NVIDIA_IMAGE = "docker.io/vllm/vllm-omni:v0.28.0"
+    OMNI_AMD_IMAGE = "docker.io/vllm/vllm-omni-rocm:v0.28.0"
 
-    # Detect platform for CPU image
-    import platform
-
-    system = platform.system()
-    machine = platform.machine()
-    if system == "Darwin" or machine in ("arm64", "aarch64"):
-        cpu_image = CPU_IMAGE_MACOS
-    else:
-        cpu_image = CPU_IMAGE_X86
+    # Official CPU image is multi-arch (amd64 + arm64), so no platform detection needed
+    cpu_image = CPU_IMAGE
 
     # Detect container runtime
     runtime = "podman"

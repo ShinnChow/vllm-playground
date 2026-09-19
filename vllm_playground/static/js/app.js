@@ -3,6 +3,7 @@ import { initMCPModule } from './modules/mcp.js';
 import { initGuideLLMModule } from './modules/guidellm.js';
 import { initClaudeCodeModule } from './modules/claudecode.js';
 import { initOmniModule } from './modules/omni.js';
+import { initImageSettingsModule } from './modules/imageSettings.js';
 import { initTokenCounterModule } from './modules/token-counter.js';
 import { initLogprobsModule } from './modules/logprobs.js';
 import { initObservabilityModule } from './modules/observability.js';
@@ -569,6 +570,12 @@ class VLLMWebUI {
                 case 'tutorials':
                     viewTitle.innerHTML = '<span class="view-title-icon">📖</span> Tutorials';
                     this.lazyLoadTutorials();
+                    break;
+                case 'settings':
+                    viewTitle.innerHTML = '<span class="view-title-icon">⚙️</span> Settings';
+                    if (this.onSettingsViewActivated) {
+                        this.onSettingsViewActivated();
+                    }
                     break;
                 default:
                     viewTitle.textContent = viewId;
@@ -1807,6 +1814,9 @@ number ::= [0-9]+`
 
             // Initialize Claude Code module
             initClaudeCodeModule(this);
+
+            // Initialize Settings / Container Images module
+            initImageSettingsModule(this);
 
             // Handle vLLM-Omni availability
             this.omniAvailable = features.vllm_omni_installed || false;

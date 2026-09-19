@@ -719,6 +719,7 @@ omni_inprocess_model: Optional[Any] = None  # Holds the Omni model when using in
 
 # User settings store (persists to ~/.vllm-playground/settings.json)
 from .settings_store import SettingsStore
+from . import image_catalog
 
 settings_store = SettingsStore()
 
@@ -2020,7 +2021,38 @@ async def get_settings():
 async def save_settings(request: Request):
     """Merge partial updates into user settings and persist to disk."""
     data = await request.json()
+
+    # Validate any custom container image override values before persisting.
+    # Dropdown-selected values are already known-good tags; this guard only
+    # matters for the free-text "Custom..." entry path.
+    for key in image_catalog.IMAGE_REPOS:
+        if key in data and data[key] and not image_catalog.is_valid_custom_tag(data[key]):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid image reference for {key}: {data[key]!r}",
+            )
+
     return settings_store.update(data)
+
+
+@app.get("/api/settings/image-catalog")
+async def get_image_catalog(refresh: bool = False):
+    """
+    Return the selectable container image version catalog for the
+    Settings > Container Images tab, merged with the user's current
+    persisted overrides.
+
+    Each entry's `options` list is sourced live from Docker Hub (cached for
+    a few hours) and falls back to a small built-in list if Docker Hub is
+    unreachable (e.g. offline/air-gapped deployments).
+    """
+    catalog = await image_catalog.get_full_catalog(force_refresh=refresh)
+    current_overrides = settings_store.get()
+
+    for key, entry in catalog.items():
+        entry["current_override"] = current_overrides.get(key, "")
+
+    return catalog
 
 
 @app.get("/api/features")
@@ -3473,8 +3505,20 @@ async def start_server(config: VLLMConfig):
                 f"Container config: enable_tool_calling={config.enable_tool_calling}, tool_call_parser={config.tool_call_parser}"
             )
 
+            # Resolve a user-configured image override (Settings > Container Images),
+            # falling back to container_manager's built-in default when unset.
+            image_overrides = settings_store.get()
+            if config.use_cpu:
+                image_override = image_overrides.get("image_override_cpu") or None
+            elif config.accelerator == "amd":
+                image_override = image_overrides.get("image_override_gpu_amd") or None
+            else:
+                image_override = image_overrides.get("image_override_gpu_nvidia") or None
+            if image_override:
+                logger.info(f"Using user-configured image override: {image_override}")
+
             # Start container
-            container_info = await container_manager.start_container(vllm_config_dict)
+            container_info = await container_manager.start_container(vllm_config_dict, image=image_override)
 
             container_id = container_info["id"]
             vllm_running = True
@@ -7416,6 +7460,16 @@ async def start_omni_server(config: OmniConfig):
                     status_code=400, detail="Container mode is not available. No container runtime found."
                 )
 
+            # Resolve a user-configured image override (Settings > Container Images),
+            # falling back to container_manager's built-in default when unset.
+            omni_image_overrides = settings_store.get()
+            if config.accelerator == "amd":
+                omni_image_override = omni_image_overrides.get("image_override_omni_amd") or None
+            else:
+                omni_image_override = omni_image_overrides.get("image_override_omni_nvidia") or None
+            if omni_image_override:
+                logger.info(f"Using user-configured Omni image override: {omni_image_override}")
+
             # Build container config for omni
             container_config = {
                 "model": config.model,
@@ -7428,6 +7482,7 @@ async def start_omni_server(config: OmniConfig):
                 "enable_cpu_offload": config.enable_cpu_offload,
                 "trust_remote_code": config.trust_remote_code,
                 "hf_token": config.hf_token,
+                "image_override": omni_image_override,
             }
 
             result = await container_manager.start_omni_container(container_config)

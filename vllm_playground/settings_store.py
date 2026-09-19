@@ -25,6 +25,13 @@ DEFAULTS: Dict[str, Any] = {
     "omni_run_mode": "remote",
     "omni_remote_url": "",
     "omni_remote_api_key": "",
+    # Container image version overrides (empty string = use built-in default
+    # from container_manager.py). Set via the Settings > Container Images tab.
+    "image_override_gpu_nvidia": "",
+    "image_override_gpu_amd": "",
+    "image_override_cpu": "",
+    "image_override_omni_nvidia": "",
+    "image_override_omni_amd": "",
 }
 
 # Keys that are allowed to be stored (acts as a simple schema guard)
