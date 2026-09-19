@@ -117,6 +117,15 @@ jobs:
     name: Frontend smoke tests (Playwright)
     needs: lint
     runs-on: ubuntu-latest
+    # tests/conftest.py intentionally redirects $HOME to an isolated temp
+    # dir for the whole test session (so tests never touch a real
+    # ~/.vllm-playground). Playwright's Python client resolves its browser
+    # cache as $HOME/.cache/ms-playwright *at runtime*, so it would
+    # otherwise look in the swapped-out HOME instead of where `playwright
+    # install` actually put the browser. Pin it to a fixed path so both
+    # steps agree regardless of what $HOME is at the time.
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: /home/runner/.cache/ms-playwright-ci
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
