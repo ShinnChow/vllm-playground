@@ -703,6 +703,13 @@ current_served_model_name: Optional[str] = None  # Track the served model name a
 current_api_model_id: Optional[str] = None
 # Ids from the last GET /v1/models on the active remote (for select-model validation)
 remote_discovered_model_ids: List[str] = []
+# Some remote gateways (e.g. per-model-routed MaaS/KServe setups) advertise a
+# dedicated base URL for each model in GET /v1/models (a "url" field) rather
+# than exposing every model under one shared OpenAI-compatible root. When
+# present, maps model id -> that model's own base URL (root, no /v1 suffix)
+# so proxied requests (e.g. /api/chat) hit the right backend for the
+# currently selected model instead of always using the generic remote_url.
+remote_model_base_urls: Dict[str, str] = {}
 
 # vLLM-Omni global state (separate from vLLM)
 omni_process: Optional[asyncio.subprocess.Process] = None  # For subprocess mode
@@ -899,6 +906,64 @@ def normalize_vllm_remote_root_url(url: str) -> str:
     return u
 
 
+# Field names different MaaS/gateway implementations have been observed (or are
+# likely) to use for advertising a *per-model* base URL in a GET /v1/models
+# entry, when a gateway routes each model under its own path/subdomain instead
+# of exposing every model under one shared OpenAI-compatible root.
+_MODEL_SPECIFIC_URL_KEYS = (
+    "url",
+    "endpoint",
+    "base_url",
+    "api_base",
+    "inference_url",
+    "service_url",
+    "root_url",
+    "model_url",
+    "chat_url",
+    "href",
+)
+
+
+def _find_model_specific_url(model_entry: Dict[str, Any], exclude_url: Optional[str] = None) -> Optional[str]:
+    """Best-effort, vendor-agnostic discovery of a per-model base URL.
+
+    Rather than hardcoding one gateway's field name for this (different MaaS
+    providers expose it differently, if at all), check a list of common
+    aliases first, then fall back to scanning every string field on the
+    model entry for something that looks like an absolute URL. Returns
+    ``None`` if nothing usable is found, or if the only candidate found is
+    the same root we already know about (``exclude_url``).
+    """
+
+    def _is_new_candidate(value: Any) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        candidate = value.strip()
+        if not candidate.lower().startswith(("http://", "https://")):
+            return None
+        if exclude_url and normalize_vllm_remote_root_url(candidate).rstrip("/") == normalize_vllm_remote_root_url(
+            exclude_url
+        ).rstrip("/"):
+            return None
+        return candidate
+
+    for key in _MODEL_SPECIFIC_URL_KEYS:
+        found = _is_new_candidate(model_entry.get(key))
+        if found:
+            return found
+
+    # Fallback: scan every remaining field in case the gateway uses a key
+    # name we haven't seen yet.
+    for key, value in model_entry.items():
+        if key in _MODEL_SPECIFIC_URL_KEYS:
+            continue
+        found = _is_new_candidate(value)
+        if found:
+            return found
+
+    return None
+
+
 def _max_context_from_litellm_model_info(mi: Optional[Dict[str, Any]]) -> Optional[int]:
     """Derive a display context size from LiteLLM ``model_info`` (see GET /v1/model/info)."""
     if not mi or not isinstance(mi, dict):
@@ -987,6 +1052,11 @@ async def fetch_remote_v1_models_enriched(
                         "owned_by": m.get("owned_by", ""),
                         "max_model_len": m.get("max_model_len"),
                         "root": m.get("root", ""),
+                        # Some gateways (per-model-routed MaaS/KServe setups) advertise
+                        # a dedicated base URL for this specific model. Different
+                        # vendors use different field names for this (or none at
+                        # all), so scan generically instead of assuming one schema.
+                        "url": _find_model_specific_url(m, exclude_url=root) or "",
                     }
                     for m in models
                 ]
@@ -1005,9 +1075,16 @@ def get_vllm_base_url() -> str:
     Centralizes URL construction logic that was previously duplicated across
     8+ endpoints. Handles remote, Kubernetes, container, and subprocess modes.
     """
-    global current_config, current_run_mode
+    global current_config, current_run_mode, current_model_identifier, remote_model_base_urls
 
     if current_run_mode == "remote" and current_config and current_config.remote_url:
+        # Prefer a model-specific base URL when the remote gateway advertised one
+        # for the currently selected model (e.g. per-model-routed MaaS/KServe
+        # gateways where each model lives under its own path prefix rather than
+        # a single shared OpenAI-compatible root).
+        model_specific_url = remote_model_base_urls.get(current_model_identifier) if current_model_identifier else None
+        if model_specific_url:
+            return normalize_vllm_remote_root_url(model_specific_url).rstrip("/")
         return normalize_vllm_remote_root_url(current_config.remote_url).rstrip("/")
 
     is_kubernetes = os.path.exists("/var/run/secrets/kubernetes.io/serviceaccount/token")
@@ -1032,6 +1109,84 @@ def get_vllm_auth_headers() -> dict:
     if current_config and current_config.remote_api_key:
         return {"Authorization": f"Bearer {current_config.remote_api_key}"}
     return {}
+
+
+async def _discover_model_specific_base_url(auth_headers: Dict[str, str], model_id: str) -> Optional[str]:
+    """Re-probe GET /v1/models on the active remote and look for a per-model
+    base URL for ``model_id``, used as a self-healing fallback when the
+    shared root 404s on a model-specific route (see ``_find_model_specific_url``).
+
+    This is intentionally vendor-agnostic: it doesn't assume any particular
+    MaaS gateway's schema, just that *some* field on the matching /v1/models
+    entry might be an absolute URL different from the root we already tried.
+    """
+    global current_config
+    if not current_config or not current_config.remote_url or not model_id:
+        return None
+    root = normalize_vllm_remote_root_url(current_config.remote_url).rstrip("/")
+    try:
+        timeout = aiohttp.ClientTimeout(total=15, connect=10)
+        async with aiohttp.ClientSession(timeout=timeout, headers=auth_headers) as session:
+            async with session.get(f"{root}/v1/models") as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, OSError):
+        return None
+
+    models = data.get("data") if isinstance(data, dict) else None
+    if not models:
+        return None
+    for m in models:
+        if not isinstance(m, dict) or m.get("id") != model_id:
+            continue
+        return _find_model_specific_url(m, exclude_url=root)
+    return None
+
+
+async def _post_chat_completions_with_fallback(
+    session: "aiohttp.ClientSession", payload: Dict[str, Any], auth_headers: Dict[str, str]
+) -> Tuple["aiohttp.ClientResponse", str]:
+    """POST to the resolved ``/v1/chat/completions`` URL, self-healing once if
+    the shared root 404s and a model-specific base URL can be discovered.
+
+    Different MaaS gateways expose per-model routing in different, often
+    undocumented ways (see ``_find_model_specific_url``). Rather than failing
+    outright when the "obvious" URL 404s, this makes one extra attempt against
+    a discovered per-model URL before giving up — and remembers it (via
+    ``remote_model_base_urls``) so subsequent requests go straight there.
+
+    Returns ``(response, url_used)``. Caller is responsible for calling
+    ``response.release()`` (or reading its body) when done.
+    """
+    global current_model_identifier, remote_model_base_urls
+
+    base_url = get_vllm_base_url()
+    url = f"{base_url}/v1/chat/completions"
+    response = await session.post(url, json=payload)
+
+    if response.status == 404 and current_run_mode == "remote" and current_model_identifier:
+        already_model_specific = (
+            current_model_identifier in remote_model_base_urls
+            and normalize_vllm_remote_root_url(remote_model_base_urls[current_model_identifier]).rstrip("/") == base_url
+        )
+        if not already_model_specific:
+            fallback_base = await _discover_model_specific_base_url(auth_headers, current_model_identifier)
+            if fallback_base:
+                fallback_base_normalized = normalize_vllm_remote_root_url(fallback_base).rstrip("/")
+                if fallback_base_normalized != base_url:
+                    fallback_url = f"{fallback_base_normalized}/v1/chat/completions"
+                    logger.info(f"vLLM chat 404 at shared root ({url}); retrying model-specific URL: {fallback_url}")
+                    response.release()
+                    response = await session.post(fallback_url, json=payload)
+                    url = fallback_url
+                    if response.status == 200:
+                        remote_model_base_urls[current_model_identifier] = fallback_base_normalized
+                        logger.info(
+                            f"✓ Learned per-model base URL for {current_model_identifier!r}: {fallback_base_normalized}"
+                        )
+
+    return response, url
 
 
 def _benchmark_auth_headers_for_entry(entry: InstanceEntry) -> Dict[str, str]:
@@ -2900,7 +3055,8 @@ async def start_server(config: VLLMConfig):
         current_run_mode, \
         latest_vllm_metrics, \
         metrics_timestamp, \
-        remote_discovered_model_ids
+        remote_discovered_model_ids, \
+        remote_model_base_urls
 
     # If a server is already running, park it (keep process alive, clear globals)
     # so the new server can start on its own port.
@@ -2983,6 +3139,11 @@ async def start_server(config: VLLMConfig):
                     model_list = ", ".join(m.get("id", "unknown") for m in discovered_models_list)
                     await broadcast_log(f"[WEBUI] ✓ Available models: {model_list}")
                     remote_discovered_model_ids = [m["id"] for m in discovered_models_list]
+                    remote_model_base_urls = {m["id"]: m["url"] for m in discovered_models_list if m.get("url")}
+                    if remote_model_base_urls:
+                        await broadcast_log(
+                            f"[WEBUI] ✓ Per-model base URLs discovered for: {', '.join(remote_model_base_urls)}"
+                        )
                     ids = remote_discovered_model_ids
                     if config.model and config.model in ids:
                         discovered_model = config.model
@@ -2993,12 +3154,15 @@ async def start_server(config: VLLMConfig):
                         await broadcast_log(f"[WEBUI] ✓ Max context length: {first_with_ctx['max_model_len']}")
                 else:
                     remote_discovered_model_ids = []
+                    remote_model_base_urls = {}
                     await broadcast_log("[WEBUI] ⚠ No models found on remote server")
             elif models_http_status is not None:
                 remote_discovered_model_ids = []
+                remote_model_base_urls = {}
                 await broadcast_log(f"[WEBUI] ⚠ Could not list models (status {models_http_status})")
             else:
                 remote_discovered_model_ids = []
+                remote_model_base_urls = {}
 
             if not health_ok and models_http_status != 200:
                 parts = []
@@ -3663,7 +3827,8 @@ async def stop_server():
         current_served_model_name, \
         current_api_model_id, \
         current_run_mode, \
-        remote_discovered_model_ids
+        remote_discovered_model_ids, \
+        remote_model_base_urls
 
     # Check if server is running
     if not await check_vllm_server_running():
@@ -3710,6 +3875,7 @@ async def stop_server():
         current_api_model_id = None
         current_run_mode = None
         remote_discovered_model_ids = []
+        remote_model_base_urls = {}
 
         # Mark the stopped instance in the registry (keep the entry, don't remove).
         registry = _ir_mod.instance_registry
@@ -3737,7 +3903,7 @@ async def stop_server():
 @app.get("/api/remote/models")
 async def api_remote_list_models():
     """Re-fetch ``GET /v1/models`` from the active remote (e.g. after switching instances)."""
-    global remote_discovered_model_ids
+    global remote_discovered_model_ids, remote_model_base_urls
 
     if current_run_mode != "remote" or not vllm_running or not current_config or not current_config.remote_url:
         raise HTTPException(status_code=400, detail="Not connected to a remote server")
@@ -3751,6 +3917,7 @@ async def api_remote_list_models():
     if status != 200:
         raise HTTPException(status_code=502, detail=f"Remote /v1/models returned HTTP {status}")
     remote_discovered_model_ids = [m["id"] for m in lst]
+    remote_model_base_urls = {m["id"]: m["url"] for m in lst if m.get("url")}
     return {"models": lst}
 
 
@@ -4809,14 +4976,22 @@ async def chat(request: ChatRequestWithStopTokens):
                 timeout = aiohttp.ClientTimeout(total=300, connect=10, sock_read=120)
                 auth_headers = get_vllm_auth_headers()
                 async with aiohttp.ClientSession(timeout=timeout, headers=auth_headers) as session:
-                    async with session.post(url, json=payload) as response:
+                    response, resolved_url = await _post_chat_completions_with_fallback(session, payload, auth_headers)
+                    try:
                         if response.status != 200:
                             text = await response.text()
                             logger.error(f"=== vLLM ERROR RESPONSE ===")
+                            logger.error(f"URL: {resolved_url}")
                             logger.error(f"Status: {response.status}")
+                            logger.error(f"Response headers: {dict(response.headers)}")
                             logger.error(f"Error: {text}")
                             logger.error(f"==========================")
-                            yield f"data: {{'error': '{text}'}}\n\n"
+                            error_message = (
+                                text.strip() if text.strip() else f"Upstream returned HTTP {response.status}"
+                            )
+                            error_payload = json.dumps({"error": {"message": error_message, "status": response.status}})
+                            yield f"data: {error_payload}\n\n"
+                            yield "data: [DONE]\n\n"
                             return
 
                         logger.info(f"=== vLLM STREAMING RESPONSE START ===")
@@ -4838,7 +5013,7 @@ async def chat(request: ChatRequestWithStopTokens):
                                             if line != "data: [DONE]":
                                                 logger.debug(f"vLLM chunk: {line}")
                                             # Try to extract content from SSE data
-                                            import json
+                                            # (json is already imported at module level)
 
                                             if line.startswith("data: "):
                                                 try:
@@ -4884,7 +5059,10 @@ async def chat(request: ChatRequestWithStopTokens):
                             # Connection error during streaming (e.g., server stopped)
                             logger.warning(f"Stream interrupted: {type(e).__name__}: {e}")
                             # Send a final error message to the client
-                            yield f"data: {{'error': 'Stream interrupted: server may have stopped'}}\n\n"
+                            error_payload = json.dumps(
+                                {"error": {"message": "Stream interrupted: server may have stopped"}}
+                            )
+                            yield f"data: {error_payload}\n\n"
                             yield "data: [DONE]\n\n"
                             return
 
@@ -4893,18 +5071,24 @@ async def chat(request: ChatRequestWithStopTokens):
                         logger.info(f"Full text: {full_response_text}")
                         logger.info(f"Length: {len(full_response_text)} chars")
                         logger.info(f"===============================")
+                    finally:
+                        response.release()
 
             except (aiohttp.ClientError, aiohttp.ClientPayloadError, asyncio.TimeoutError) as e:
                 # Connection error before streaming started
                 logger.error(f"Failed to connect to vLLM: {type(e).__name__}: {e}")
-                yield f"data: {{'error': 'Failed to connect to vLLM server'}}\n\n"
+                error_payload = json.dumps({"error": {"message": f"Failed to connect to vLLM server: {e}"}})
+                yield f"data: {error_payload}\n\n"
+                yield "data: [DONE]\n\n"
             except Exception as e:
                 # Unexpected error
                 logger.error(f"Unexpected error in streaming: {type(e).__name__}: {e}")
                 import traceback
 
                 logger.error(traceback.format_exc())
-                yield f"data: {{'error': 'Internal error during streaming'}}\n\n"
+                error_payload = json.dumps({"error": {"message": f"Internal error during streaming: {e}"}})
+                yield f"data: {error_payload}\n\n"
+                yield "data: [DONE]\n\n"
 
         if request.stream:
             # Return streaming response using SSE
@@ -4922,10 +5106,12 @@ async def chat(request: ChatRequestWithStopTokens):
             timeout = aiohttp.ClientTimeout(total=120, connect=10)
             auth_headers = get_vllm_auth_headers()
             async with aiohttp.ClientSession(timeout=timeout, headers=auth_headers) as session:
-                async with session.post(url, json=payload) as response:
+                response, resolved_url = await _post_chat_completions_with_fallback(session, payload, auth_headers)
+                try:
                     if response.status != 200:
                         text = await response.text()
                         logger.error(f"=== vLLM ERROR RESPONSE (non-streaming) ===")
+                        logger.error(f"URL: {resolved_url}")
                         logger.error(f"Status: {response.status}")
                         logger.error(f"Error: {text}")
                         logger.error(f"===========================================")
@@ -4953,6 +5139,8 @@ async def chat(request: ChatRequestWithStopTokens):
                                 logger.info(f"  - {func.get('name', 'unknown')}: {func.get('arguments', '{}')}")
                     logger.info(f"=====================================")
                     return data
+                finally:
+                    response.release()
 
     except HTTPException:
         # Re-raise HTTPExceptions as-is (they already have proper status and detail)
