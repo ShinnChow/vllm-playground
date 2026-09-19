@@ -162,45 +162,13 @@ jobs:
           # state for a fresh install, so don't fail the build on that.
           /tmp/wheel-venv/bin/vllm-playground status || true
 
-  container-build-check:
-    name: Container build check (${{ matrix.image.name }})
-    needs: lint
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        image:
-          - name: vllm-playground (Podman orchestrator)
-            containerfile: containers/Containerfile.vllm-playground
-          - name: openshift (Kubernetes orchestrator)
-            containerfile: openshift/Containerfile
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - name: Build image (no push)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ${{ matrix.image.containerfile }}
-          push: false
-          load: true
-          tags: vllm-playground-ci:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      - name: Boot image and smoke test /api/status
-        run: |
-          docker run -d --name ci-smoke -p 7860:7860 vllm-playground-ci:test
-          ok=0
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:7860/api/status > /dev/null; then ok=1; break; fi
-            sleep 2
-          done
-          docker logs ci-smoke || true
-          docker rm -f ci-smoke || true
-          if [ "$ok" -ne 1 ]; then
-            echo "::error::Container never became healthy on /api/status"
-            exit 1
-          fi
+  # NOTE: container image build/smoke-test checks (Podman + OpenShift
+  # Containerfiles) intentionally do NOT run here. They're slow (the
+  # Podman one takes ~7-8 minutes, mostly `microdnf install
+  # podman-remote`) and container/OpenShift orchestration is not the
+  # primary, actively-developed use case (that's local/CLI usage). They
+  # still run nightly -- see .github/workflows/nightly.yml -- so breakage
+  # is caught within a day instead of blocking every PR.
 
   manifest-validate:
     name: Validate Kubernetes/OpenShift manifests
@@ -246,7 +214,6 @@ jobs:
       - k8s-manager-tests
       - frontend-smoke
       - package-build
-      - container-build-check
       - manifest-validate
     runs-on: ubuntu-latest
     steps:
