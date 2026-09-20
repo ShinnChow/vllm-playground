@@ -30,13 +30,14 @@ Run subprocess, container, and remote vLLM servers side by side; switch tabs, sa
 
 ![Instances management grid](https://raw.githubusercontent.com/micytao/vllm-playground/main/assets/vllm-playground-multiinstnaces-view.png)
 
-### 🆕 What's New in v0.1.8
+### 🆕 What's New in v0.1.9
 
-- **Multi-instance backends** — Registry-backed tabs and **Management → Instances**; run subprocess, container, and remote servers side by side ([guide](docs/MULTI_INSTANCE_GUIDE.md)).
-- **Remote & LiteLLM** — Tougher URL/probing, `/v1/models` for the chat model list, better context limits from gateway metadata.
-- **Benchmarking** — Remote Bearer auth and UI API key (remote only); **model ID follows the benchmark’s target instance** so local vLLM is not called with a stale remote model name.
+- **Configurable container image versions** — New Settings tab to pick vLLM/vLLM-Omni image versions per accelerator from a live Docker Hub-sourced dropdown, with persisted overrides and an offline fallback list.
+- **MaaS/KServe per-model routing** — Remote mode now detects and uses gateways that advertise a dedicated base URL per model instead of one shared OpenAI-compatible root, with a self-healing retry.
+- **Remote mode fixes** — Streaming errors now surface as real, readable messages instead of a generic "No response from model"; fixed a token-count fallback that fabricated "1 out" tokens on failed requests.
+- **CI/CD pipeline** — Every change now runs through an automated test suite (lint, unit, API, container/Kubernetes managers, frontend) before merging, plus a gated release process for PyPI publishing — see **[CI/CD Pipeline guide](docs/CI_CD_PIPELINE.md)**.
 
-*v0.1.6 introduced the Observability Dashboard, PagedAttention visualizer, token counter, logprobs, and speculative decoding — see **[Changelog](CHANGELOG.md)** and **[v0.1.6](releases/v0.1.6.md)** for details.*
+*v0.1.8 added multi-instance backends, tougher Remote/LiteLLM probing, and per-instance benchmarking; v0.1.6 introduced the Observability Dashboard, PagedAttention visualizer, token counter, logprobs, and speculative decoding — see **[Changelog](CHANGELOG.md)** for the full history.*
 
 ---
 
